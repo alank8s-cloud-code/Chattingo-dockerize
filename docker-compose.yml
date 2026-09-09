@@ -1,0 +1,59 @@
+services:
+
+  # Service 1: A database application
+  database:
+    container_name: mysql-container
+    image: mysql:8.0
+    restart: unless-stopped
+    networks:
+      - chatting-network
+    volumes:
+      - mysql_db:/var/lib/mysql 
+    ports:
+      - "3306:3306"
+    env_file:
+      - ./backend/.env
+
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h localhost -uroot -p$${MYSQL_ROOT_PASSWORD} --silent"]
+      interval: 10s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+  # Service 2: A backend application
+  backend:
+    container_name: backend-app
+    image: alank8scloud/chattigno-backend:latest
+    restart: unless-stopped
+    networks:
+      - chatting-network
+    ports:
+      - "8080:8080"
+    env_file:
+      - ./backend/.env
+    depends_on:
+      database:
+        condition: service_healthy
+
+  #  Service 3: A frontend application
+  frontend:
+    container_name: frontend-app
+    image: alank8scloud/chattigno-frontend:latest
+    restart: unless-stopped
+    networks:
+      - chatting-network
+    ports:
+      - "80:80"
+    depends_on:
+      - backend
+
+networks:
+  chatting-network:
+    driver: bridge
+
+volumes:
+  mysql_db:
+    driver: local
+
+
