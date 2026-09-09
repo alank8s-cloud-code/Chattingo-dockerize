@@ -6,6 +6,7 @@ const ChatList = ({
   auth,
   chat,
   lastMessages,
+  unreadCounts = {},
   handleClickOnChatCard,
   handleCurrentChat,
 }) => {
@@ -49,6 +50,7 @@ const ChatList = ({
                   lastMessages[item.id]?.content || "Start your conversation",
                 timestamp: lastMessages[item.id]?.timestamp || "",
               }}
+              unreadCount={unreadCounts[item.id] || 0}
             />
           </div>
         ))}
@@ -57,3 +59,4 @@ const ChatList = ({
 };
 
 export default ChatList;
+

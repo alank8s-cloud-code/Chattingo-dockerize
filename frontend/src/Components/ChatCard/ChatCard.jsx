@@ -1,6 +1,6 @@
 import React from "react";
 
-const ChatCard = ({ userImg, name, lastMessage }) => {
+const ChatCard = ({ userImg, name, lastMessage, unreadCount = 0 }) => {
   // Function to format a timestamp to a readable date
   const formatTimestamp = (timestamp) => {
     if (!timestamp) return "";
@@ -21,13 +21,14 @@ const ChatCard = ({ userImg, name, lastMessage }) => {
           </p>
         </div>
         <div className="flex justify-between items-center">
-          <p className="text-gray-600 truncate">
+          <p className={`truncate ${unreadCount > 0 ? "text-black font-semibold" : "text-gray-600"}`}>
             {lastMessage ? lastMessage.content : ""}
           </p>
-          <div className="flex space-x-2">
-            <span className="text-gray-500 text-xs">3h</span>
-            <span className="bg-green-500 h-2 w-2 rounded-full"></span>
-          </div>
+          {unreadCount > 0 && (
+            <span className="bg-[#00a884] text-white text-xs font-semibold rounded-full min-w-[20px] h-5 px-1.5 flex items-center justify-center">
+              {unreadCount > 99 ? "99+" : unreadCount}
+            </span>
+          )}
         </div>
       </div>
     </div>
@@ -35,3 +36,4 @@ const ChatCard = ({ userImg, name, lastMessage }) => {
 };
 
 export default ChatCard;
+

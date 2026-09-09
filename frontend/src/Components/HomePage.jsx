@@ -34,8 +34,20 @@ function HomePage() {
   const [isConnected, setIsConnected] = useState(false);
   const [messages, setMessages] = useState([]);
   const [lastMessages, setLastMessages] = useState({});
+  const [unreadCounts, setUnreadCounts] = useState({});
   const messageContainerRef = useRef(null);
   const stompClientRef = useRef(null);
+  // Mirrors currentChat so the WebSocket callback (registered once per
+  // subscription) always reads the *latest* open chat instead of the value
+  // captured when the subscription was created.
+  const currentChatRef = useRef(null);
+  // chatId -> active STOMP subscription, so we can subscribe to newly added
+  // chats and unsubscribe from removed ones without duplicating subscriptions.
+  const chatSubscriptionsRef = useRef({});
+
+  useEffect(() => {
+    currentChatRef.current = currentChat;
+  }, [currentChat]);
 
   useEffect(() => {
     // Scroll to bottom whenever messages change
@@ -95,41 +107,48 @@ function HomePage() {
     console.log("on error ", error);
   };
 
-  // Callback for successful WebSocket connection
+  // Callback for successful WebSocket connection.
+  // Subscribing itself now happens in the "subscribe to every chat" effect
+  // below (keyed off isConnected), so a reconnect naturally re-triggers it.
   const onConnect = () => {
     setIsConnected(true);
-
-    // Subscribe to the current chat messages based on the chat type
-    if (stompClient && currentChat) {
-      if (currentChat.group) {
-        // Subscribe to group chat messages
-        stompClient.subscribe(`/group/${currentChat?.id}`, onMessageReceive);
-      } else {
-        // Subscribe to direct (one-on-one) chat messages
-        stompClient.subscribe(`/direct/${currentChat?.id}`, onMessageReceive);
-      }
-    }
   };
 
-  // Callback to handle received messages from WebSocket
+  // Callback to handle received messages from WebSocket. Registered once per
+  // chat subscription (see effect below), so it must always read the
+  // *current* open chat via currentChatRef rather than a closed-over value.
   const onMessageReceive = (payload) => {
     const receivedMessage = JSON.parse(payload.body);
-    setMessages((prevMessages) => {
-      // Avoid duplicating a message we already added optimistically when we sent it
-      // (the server echoes it back over the same channel we're subscribed to)
-      if (
-        receivedMessage.id &&
-        prevMessages.some((m) => m.id === receivedMessage.id)
-      ) {
-        return prevMessages;
-      }
-      return [...prevMessages, receivedMessage];
-    });
+    const msgChatId = receivedMessage?.chat?.id;
+    const openChatId = currentChatRef.current?.id;
 
-    if (receivedMessage?.chat?.id) {
+    // Always keep the sidebar preview for this chat up to date, whether or
+    // not it's the chat currently open.
+    if (msgChatId) {
       setLastMessages((prev) => ({
         ...prev,
-        [receivedMessage.chat.id]: receivedMessage,
+        [msgChatId]: receivedMessage,
+      }));
+    }
+
+    if (msgChatId === openChatId) {
+      // This is the chat currently on screen - append to the visible thread.
+      setMessages((prevMessages) => {
+        // Avoid duplicating a message we already added optimistically when we
+        // sent it (the server echoes it back over the same channel).
+        if (
+          receivedMessage.id &&
+          prevMessages.some((m) => m.id === receivedMessage.id)
+        ) {
+          return prevMessages;
+        }
+        return [...prevMessages, receivedMessage];
+      });
+    } else if (msgChatId) {
+      // A different chat received a message - bump its unread badge.
+      setUnreadCounts((prev) => ({
+        ...prev,
+        [msgChatId]: (prev[msgChatId] || 0) + 1,
       }));
     }
   };
@@ -147,18 +166,47 @@ function HomePage() {
     };
   }, []);
 
-  // Effect to subscribe to a chat when connected
+  // Effect: subscribe to EVERY chat in the sidebar (not just the open one),
+  // so previews, unread badges, and reordering can update live no matter
+  // which conversation is currently on screen. Re-runs whenever the socket
+  // (re)connects or the chat list changes, adding subscriptions for new
+  // chats and dropping ones for chats that disappeared.
   useEffect(() => {
-    if (isConnected && stompClient && currentChat?.id) {
-      const subscription = currentChat.group
-        ? stompClient.subscribe(`/group/${currentChat.id}`, onMessageReceive)
-        : stompClient.subscribe(`/direct/${currentChat.id}`, onMessageReceive);
+    if (!isConnected || !stompClient || !Array.isArray(chat.chats)) return;
 
-      return () => {
-        subscription.unsubscribe();
-      };
-    }
-  }, [isConnected, stompClient, currentChat]);
+    chat.chats.forEach((c) => {
+      if (!c?.id || chatSubscriptionsRef.current[c.id]) return;
+      const destination = c.group ? `/group/${c.id}` : `/direct/${c.id}`;
+      chatSubscriptionsRef.current[c.id] = stompClient.subscribe(
+        destination,
+        onMessageReceive
+      );
+    });
+
+    Object.keys(chatSubscriptionsRef.current).forEach((idKey) => {
+      // Object keys are strings; compare loosely against numeric/string ids.
+      const stillPresent = chat.chats.some((c) => String(c.id) === idKey);
+      if (!stillPresent) {
+        try {
+          chatSubscriptionsRef.current[idKey].unsubscribe();
+        } catch (e) { }
+        delete chatSubscriptionsRef.current[idKey];
+      }
+    });
+  }, [isConnected, stompClient, chat.chats]);
+
+  // Drop all chat subscriptions on disconnect (e.g. before a reconnect) so
+  // they don't leak, and so the effect above cleanly re-subscribes everything
+  // once isConnected flips back to true.
+  useEffect(() => {
+    if (isConnected) return;
+    Object.values(chatSubscriptionsRef.current).forEach((sub) => {
+      try {
+        sub.unsubscribe();
+      } catch (e) { }
+    });
+    chatSubscriptionsRef.current = {};
+  }, [isConnected]);
 
   // Effect to reflect a message we just sent (via REST) in the open chat.
   // NOTE: we intentionally do NOT also stompClient.publish() here - the REST
@@ -241,7 +289,27 @@ function HomePage() {
   // Function to set the current chat
   const handleCurrentChat = (item) => {
     setCurrentChat(item);
+    if (item?.id) {
+      setUnreadCounts((prev) => {
+        if (!prev[item.id]) return prev;
+        const updated = { ...prev };
+        delete updated[item.id];
+        return updated;
+      });
+    }
   };
+
+  // Sidebar chats ordered most-recently-active first, using whichever is
+  // more recent: a live/last-fetched message, or the chat's own createdAt as
+  // a fallback for brand-new chats with no messages yet.
+  const sortedChats = React.useMemo(() => {
+    if (!Array.isArray(chat.chats)) return [];
+    const activityTime = (c) => {
+      const msgTime = lastMessages[c.id]?.timestamp;
+      return msgTime ? new Date(msgTime).getTime() : 0;
+    };
+    return [...chat.chats].sort((a, b) => activityTime(b) - activityTime(a));
+  }, [chat.chats, lastMessages]);
 
   // Effect to fetch each chat's latest message for the sidebar preview.
   // NOTE: this intentionally does NOT go through the shared `message.messages`
@@ -347,8 +415,9 @@ function HomePage() {
                 <ChatList
                   querys={querys}
                   auth={auth}
-                  chat={chat}
+                  chat={{ ...chat, chats: sortedChats }}
                   lastMessages={lastMessages}
+                  unreadCounts={unreadCounts}
                   handleClickOnChatCard={handleClickOnChatCard}
                   handleCurrentChat={handleCurrentChat}
                 />
@@ -454,4 +523,5 @@ function HomePage() {
 }
 
 export default HomePage;
+
 
