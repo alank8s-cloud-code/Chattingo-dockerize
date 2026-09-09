@@ -56,6 +56,21 @@ function HomePage() {
       },
       onConnect: onConnect,
       onStompError: onError,
+      // Auto-reconnect if the connection drops (network blip, backend restart, etc.)
+      reconnectDelay: 5000,
+      heartbeatIncoming: 10000,
+      heartbeatOutgoing: 10000,
+      // IMPORTANT: without these, isConnected never flips back to false on a silent
+      // disconnect. The library auto-reconnects and calls onConnect again, but since
+      // isConnected was already true, the effect that resubscribes to the current
+      // chat channel never re-fires - so the app looks "connected" but is actually
+      // subscribed to nothing until a full page refresh forces a clean reconnect.
+      onDisconnect: () => {
+        setIsConnected(false);
+      },
+      onWebSocketClose: () => {
+        setIsConnected(false);
+      },
       debug: (str) => {
         console.log('STOMP: ' + str);
       },
