@@ -19,8 +19,9 @@ public class RealTimeChat {
         Integer chatId = message.getChat().getId();
         boolean isGroup = message.getChat().isGroup();
 
-        String destination = (isGroup ? "/group/" : "/user/") + chatId;
+        String destination = (isGroup ? "/group/" : "/direct/") + chatId;
         simpMessagingTemplate.convertAndSend(destination, message);
     }
 
 }
+

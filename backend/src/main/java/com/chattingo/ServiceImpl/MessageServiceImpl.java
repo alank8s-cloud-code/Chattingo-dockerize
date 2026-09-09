@@ -45,11 +45,14 @@ public class MessageServiceImpl implements MessageService {
 
         message = this.messageRepository.save(message);
 
-        // Send message to WebSocket topic based on chat type
+        // Send message to WebSocket topic based on chat type.
+        // This REST call is the single source of truth for broadcasting a saved
+        // message over WebSocket - the frontend no longer separately publishes
+        // it again over STOMP, to avoid delivering every message twice.
         if (chat.isGroup()) {
             messagingTemplate.convertAndSend("/group/" + chat.getId(), message);
         } else {
-            messagingTemplate.convertAndSend( "/user/" + chat.getId(), message);
+            messagingTemplate.convertAndSend("/direct/" + chat.getId(), message);
         }
 
         return message;
@@ -90,3 +93,4 @@ public class MessageServiceImpl implements MessageService {
     }
 
 }
+

@@ -26,8 +26,15 @@ public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
     @Override
     public void configureMessageBroker(MessageBrokerRegistry registry) {
         registry.setApplicationDestinationPrefixes("/app");
-        registry.enableSimpleBroker("/group", "/user");
-        registry.setUserDestinationPrefix("/user");
+        // "/direct" carries one-on-one chat broadcasts (a plain topic per chat id,
+        // e.g. "/direct/{chatId}"). We intentionally do NOT reuse "/user" for this:
+        // Spring reserves that prefix for its own per-principal user-destination
+        // feature (setUserDestinationPrefix / convertAndSendToUser), which expects
+        // "/user/queue/..." style destinations tied to an authenticated Principal.
+        // Using "/user/{chatId}" as a plain broadcast topic collided with that
+        // feature and could cause subscriptions to be silently rewritten.
+        registry.enableSimpleBroker("/group", "/direct");
     }
 
 }
+

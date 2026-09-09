@@ -35,6 +35,7 @@ function HomePage() {
   const [messages, setMessages] = useState([]);
   const [lastMessages, setLastMessages] = useState({});
   const messageContainerRef = useRef(null);
+  const stompClientRef = useRef(null);
 
   useEffect(() => {
     // Scroll to bottom whenever messages change
@@ -60,6 +61,7 @@ function HomePage() {
       },
     });
     
+    stompClientRef.current = client;
     setStompClient(client);
     client.activate();
   };
@@ -88,8 +90,8 @@ function HomePage() {
         // Subscribe to group chat messages
         stompClient.subscribe(`/group/${currentChat?.id}`, onMessageReceive);
       } else {
-        // Subscribe to direct user messages
-        stompClient.subscribe(`/user/${currentChat?.id}`, onMessageReceive);
+        // Subscribe to direct (one-on-one) chat messages
+        stompClient.subscribe(`/direct/${currentChat?.id}`, onMessageReceive);
       }
     }
   };
@@ -97,7 +99,24 @@ function HomePage() {
   // Callback to handle received messages from WebSocket
   const onMessageReceive = (payload) => {
     const receivedMessage = JSON.parse(payload.body);
-    setMessages((prevMessages) => [...prevMessages, receivedMessage]);
+    setMessages((prevMessages) => {
+      // Avoid duplicating a message we already added optimistically when we sent it
+      // (the server echoes it back over the same channel we're subscribed to)
+      if (
+        receivedMessage.id &&
+        prevMessages.some((m) => m.id === receivedMessage.id)
+      ) {
+        return prevMessages;
+      }
+      return [...prevMessages, receivedMessage];
+    });
+
+    if (receivedMessage?.chat?.id) {
+      setLastMessages((prev) => ({
+        ...prev,
+        [receivedMessage.chat.id]: receivedMessage,
+      }));
+    }
   };
 
   // Effect to establish a WebSocket connection
@@ -105,8 +124,8 @@ function HomePage() {
     connect();
     return () => {
       try {
-        if (stompClient && isConnected) {
-          stompClient.deactivate();
+        if (stompClientRef.current) {
+          stompClientRef.current.deactivate();
           setIsConnected(false);
         }
       } catch (e) { }
@@ -118,7 +137,7 @@ function HomePage() {
     if (isConnected && stompClient && currentChat?.id) {
       const subscription = currentChat.group
         ? stompClient.subscribe(`/group/${currentChat.id}`, onMessageReceive)
-        : stompClient.subscribe(`/user/${currentChat.id}`, onMessageReceive);
+        : stompClient.subscribe(`/direct/${currentChat.id}`, onMessageReceive);
 
       return () => {
         subscription.unsubscribe();
@@ -126,16 +145,21 @@ function HomePage() {
     }
   }, [isConnected, stompClient, currentChat]);
 
-  // Effect to handle sending a new message via WebSocket
+  // Effect to reflect a message we just sent (via REST) in the open chat.
+  // NOTE: we intentionally do NOT also stompClient.publish() here - the REST
+  // call in handleCreateNewMessage already saves the message AND triggers the
+  // backend's WebSocket broadcast (see MessageServiceImpl.sendMessage). Publishing
+  // it again here used to cause every message to be broadcast twice.
   useEffect(() => {
-    if (message.newMessage && isConnected && stompClient && currentChat?.id) {
-      stompClient.publish({
-	      destination: "/app/message",
-	      body: JSON.stringify(message.newMessage),
-	      });
-      setMessages((prevMessages) => [...prevMessages, message.newMessage]);
+    if (message.newMessage && currentChat?.id) {
+      setMessages((prevMessages) => {
+        if (prevMessages.some((m) => m.id === message.newMessage.id)) {
+          return prevMessages;
+        }
+        return [...prevMessages, message.newMessage];
+      });
     }
-  }, [message.newMessage, isConnected, stompClient, currentChat]);
+  }, [message.newMessage, currentChat]);
 
   // Effect to set the messages state from the store
   useEffect(() => {
@@ -155,6 +179,13 @@ function HomePage() {
   useEffect(() => {
     dispatch(getUsersChat({ token }));
   }, [chat.createdChat, chat.createdGroup]);
+
+  // Effect to immediately open a chat right after it's created (e.g. from a search result)
+  useEffect(() => {
+    if (chat.createdChat) {
+      setCurrentChat(chat.createdChat);
+    }
+  }, [chat.createdChat]);
 
   // Function to handle opening the user menu
   const handleClick = (e) => {
@@ -197,25 +228,42 @@ function HomePage() {
     setCurrentChat(item);
   };
 
-  // Effect to fetch messages when chat changes
+  // Effect to fetch each chat's latest message for the sidebar preview.
+  // NOTE: this intentionally does NOT go through the shared `message.messages`
+  // Redux slot (used for the currently open chat) - that slot is global/unkeyed,
+  // so looping REST calls through it here previously caused a race condition
+  // where a background chat's fetch could resolve last and silently overwrite
+  // whatever conversation was actually open on screen.
   useEffect(() => {
-    chat?.chats && Array.isArray(chat.chats) &&
-      chat.chats.forEach((item) => {
-        dispatch(getAllMessages({ chatId: item.id, token }));
-      });
-  }, [chat?.chats, token, dispatch]);
+    if (!chat?.chats || !Array.isArray(chat.chats) || !token) return;
 
-  // Effect to update lastMessages when messages change
-  useEffect(() => {
-    const prevLastMessages = { ...lastMessages };
-    if (message.messages && message.messages.length > 0) {
-      message.messages.forEach((msg) => {
-        prevLastMessages[msg.chat.id] = msg;
-      });
+    let cancelled = false;
 
-      setLastMessages(prevLastMessages);
-    }
-  }, [message.messages]);
+    chat.chats.forEach(async (item) => {
+      try {
+        const res = await fetch(`${BASE_API_URL}/api/messages/${item.id}`, {
+          method: "GET",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${token}`,
+          },
+        });
+        const data = await res.json();
+        if (cancelled || !Array.isArray(data) || data.length === 0) return;
+
+        setLastMessages((prev) => ({
+          ...prev,
+          [item.id]: data[data.length - 1],
+        }));
+      } catch (e) {
+        // ignore - sidebar preview is best-effort
+      }
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [chat?.chats, token]);
 
   // Function to navigate to the user's profile
   const handleNavigate = () => {
@@ -391,3 +439,4 @@ function HomePage() {
 }
 
 export default HomePage;
+
