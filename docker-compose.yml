@@ -24,7 +24,9 @@ services:
   # Service 2: A backend application
   backend:
     container_name: backend-app
-    image: alank8scloud/chattigno-backend:latest
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.multistage
     restart: unless-stopped
     networks:
       - chatting-network
@@ -39,7 +41,9 @@ services:
   #  Service 3: A frontend application
   frontend:
     container_name: frontend-app
-    image: alank8scloud/chattigno-frontend:latest
+     build:
+      context: ./frontend
+      dockerfile: Dockerfile.multistage
     restart: unless-stopped
     networks:
       - chatting-network
